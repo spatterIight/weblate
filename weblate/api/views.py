@@ -4277,9 +4277,14 @@ class UnitViewSet(viewsets.ReadOnlyModelViewSet, UpdateModelMixin, DestroyModelM
             UnitSerializer(unit, context=self.get_serializer_context()).data
         )
 
-    @transaction.atomic
-    # ruff: ignore[complex-structure]
     def perform_update(self, serializer) -> None:
+        from weblate.trans.models.source import source_operation  # ruff: ignore[import-outside-top-level]
+
+        with source_operation(serializer.instance.translation.component):
+            self._perform_unit_update(serializer)
+
+    # ruff: ignore[complex-structure]
+    def _perform_unit_update(self, serializer) -> None:
         data = serializer.validated_data
         do_translate = "target" in data or "state" in data
         do_source = "explanation" in data or "labels" in data
@@ -4452,6 +4457,10 @@ class UnitViewSet(viewsets.ReadOnlyModelViewSet, UpdateModelMixin, DestroyModelM
                 },
             )
             serializer.is_valid(raise_exception=True)
+            if serializer.validated_data["scope"] == "report" and not user.has_perm(
+                "comment.add", unit.effective_source_unit.translation
+            ):
+                self.permission_denied(request)
 
             serializer.save()
             return Response(serializer.data, status=HTTP_201_CREATED)

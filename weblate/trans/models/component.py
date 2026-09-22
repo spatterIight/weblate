@@ -99,6 +99,7 @@ from weblate.trans.models.alert import Alert
 from weblate.trans.models.audit import log_setting_changes, should_track_field
 from weblate.trans.models.change import Change
 from weblate.trans.models.pending import PendingUnitChange
+from weblate.trans.models.source import source_operation_method, source_project_gate
 from weblate.trans.models.translation import Translation
 from weblate.trans.models.unit import Unit
 from weblate.trans.models.variant import Variant
@@ -1198,7 +1199,26 @@ class Component(  # ruff: ignore[too-many-public-methods]
         self._glossary_sync_scheduled = False
         self.new_lang_error_message: str | None = None
 
-    def save(  # ruff: ignore[complex-structure, too-many-locals]
+    def save(self, *args, **kwargs) -> None:
+        previous_project = self.old_component_settings.get("project_id")
+        if (
+            self.pk
+            and previous_project is not None
+            and previous_project != self.project_id
+        ):
+            with (
+                self.repository.lock,
+                source_project_gate(
+                    [previous_project, self.project_id],
+                    using=self._state.db or "default",
+                    exclusive=True,
+                ),
+            ):
+                self._save(*args, **kwargs)
+        else:
+            self._save(*args, **kwargs)
+
+    def _save(  # ruff: ignore[complex-structure, too-many-locals]
         self, *args, **kwargs
     ) -> None:
         """
@@ -4751,6 +4771,13 @@ class Component(  # ruff: ignore[too-many-public-methods]
             self.start_tracing_span("create_translations"),
             self.repository.lock,
             self.lock,
+            source_project_gate(
+                [
+                    self.project_id,
+                    *(child.project_id for child in self.linked_children),
+                ],
+                using=self._state.db or "default",
+            ),
         ):
             return self._create_translations(
                 force=force,
@@ -4784,6 +4811,7 @@ class Component(  # ruff: ignore[too-many-public-methods]
         if self.lock.is_locked:
             self.lock.reacquire()
 
+    @source_operation_method
     def _create_translations(  # ruff: ignore[complex-structure, too-many-statements]
         self,
         *,
